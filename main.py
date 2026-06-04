@@ -154,7 +154,7 @@ async def fetch_web(apify_token: str, keywords: str, university_name: str) -> di
         "apify~google-search-scraper",
         {"queries": [query], "maxPagesPerQuery": 1, "resultsPerPage": 10}
     )
-    results = [{"title": i.get("title", ""), "url": i.get("url", ""), "description": i.get("description", "")[:300)} for i in items[:20]]
+    results = [{"title": i.get("title", ""), "url": i.get("url", ""), "description": i.get("description", "")[:300]} for i in items[:20]]
     return {"query": query, "results": results, "fetched_at": datetime.now(timezone.utc).isoformat()}
 
 async def refresh_university_data(uni: dict):
