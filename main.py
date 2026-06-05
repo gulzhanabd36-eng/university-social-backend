@@ -22,6 +22,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 db_pool = None
 scheduler = AsyncIOScheduler()
 
+
 async def create_tables(conn):
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS universities (
@@ -47,6 +48,7 @@ async def create_tables(conn):
     """)
     logger.info("Tables ready")
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db_pool
@@ -60,8 +62,16 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
     await db_pool.close()
 
+
 app = FastAPI(title="University Social Analytics API", version="1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
+
 
 class RegisterRequest(BaseModel):
     name: str
@@ -69,6 +79,7 @@ class RegisterRequest(BaseModel):
     tiktok_handle: str = ""
     web_keywords: str = ""
     apify_token: str
+
 
 async def get_university(university_id: str, authorization: str):
     token = authorization.replace("Bearer ", "").strip() if authorization else ""
@@ -81,12 +92,14 @@ async def get_university(university_id: str, authorization: str):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return row
 
+
 async def apify_run_actor(apify_token: str, actor_id: str, input_data: dict) -> list:
     headers = {"Authorization": f"Bearer {apify_token}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=180) as client:
         r = await client.post(
             f"https://api.apify.com/v2/acts/{actor_id}/runs",
-            headers=headers, json=input_data
+            headers=headers,
+            json=input_data
         )
         if r.status_code not in [200, 201]:
             logger.error(f"Apify start failed: {r.status_code}")
@@ -95,7 +108,10 @@ async def apify_run_actor(apify_token: str, actor_id: str, input_data: dict) -> 
         dataset_id = r.json()["data"]["defaultDatasetId"]
         for _ in range(60):
             await asyncio.sleep(5)
-            s = await client.get(f"https://api.apify.com/v2/actor-runs/{run_id}", headers=headers)
+            s = await client.get(
+                f"https://api.apify.com/v2/actor-runs/{run_id}",
+                headers=headers
+            )
             status = s.json()["data"]["status"]
             if status == "SUCCEEDED":
                 break
@@ -103,33 +119,90 @@ async def apify_run_actor(apify_token: str, actor_id: str, input_data: dict) -> 
                 return []
         items_r = await client.get(
             f"https://api.apify.com/v2/datasets/{dataset_id}/items",
-            headers=headers, params={"limit": 50, "clean": True}
+            headers=headers,
+            params={"limit": 50, "clean": True}
         )
         return items_r.json() if items_r.status_code == 200 else []
 
+
 async def fetch_instagram(apify_token: str, handle: str) -> dict:
     handle = handle.lstrip("@")
-    items = await apify_run_actor(apify_token, "apify~instagram-scraper", {"usernames": [handle], "resultsLimit": 20})
+    items = await apify_run_actor(
+        apify_token,
+        "apify~instagram-scraper",
+        {"usernames": [handle], "resultsLimit": 20}
+    )
     if not items:
         return {"error": "No data", "handle": handle}
     profile = items[0] if items else {}
-    posts = [{"id": p.get("id"), "caption": p.get("caption", "")[:300], "likes": p.get("likesCount", 0), "comments": p.get("commentsCount", 0), "timestamp": p.get("timestamp", "")} for p in items[:20]]
-    return {"handle": handle, "followers": profile.get("followersCount", 0), "posts": posts, "fetched_at": datetime.now(timezone.utc).isoformat()}
+    posts = [
+        {
+            "id": p.get("id"),
+            "caption": p.get("caption", "")[:300],
+            "likes": p.get("likesCount", 0),
+            "comments": p.get("commentsCount", 0),
+            "timestamp": p.get("timestamp", "")
+        }
+        for p in items[:20]
+    ]
+    return {
+        "handle": handle,
+        "followers": profile.get("followersCount", 0),
+        "posts": posts,
+        "fetched_at": datetime.now(timezone.utc).isoformat()
+    }
+
 
 async def fetch_tiktok(apify_token: str, handle: str) -> dict:
     handle = handle.lstrip("@")
-    items = await apify_run_actor(apify_token, "clockworks~tiktok-scraper", {"profiles": [handle], "resultsPerPage": 20})
+    items = await apify_run_actor(
+        apify_token,
+        "clockworks~tiktok-scraper",
+        {"profiles": [handle], "resultsPerPage": 20}
+    )
     if not items:
         return {"error": "No data", "handle": handle}
     profile = items[0] if items else {}
-    videos = [{"id": v.get("id"), "desc": v.get("desc", "")[:300], "plays": v.get("playCount", 0), "likes": v.get("diggCount", 0), "shares": v.get("shareCount", 0), "createTime": v.get("createTimeISO", "")} for v in items[:20]]
-    return {"handle": handle, "followers": profile.get("authorStats", {}).get("followerCount", 0), "videos": videos, "fetched_at": datetime.now(timezone.utc).isoformat()}
+    videos = [
+        {
+            "id": v.get("id"),
+            "desc": v.get("desc", "")[:300],
+            "plays": v.get("playCount", 0),
+            "likes": v.get("diggCount", 0),
+            "shares": v.get("shareCount", 0),
+            "createTime": v.get("createTimeISO", "")
+        }
+        for v in items[:20]
+    ]
+    return {
+        "handle": handle,
+        "followers": profile.get("authorStats", {}).get("followerCount", 0),
+        "videos": videos,
+        "fetched_at": datetime.now(timezone.utc).isoformat()
+    }
+
 
 async def fetch_web(apify_token: str, keywords: str, university_name: str) -> dict:
     query = keywords or university_name
-    items = await apify_run_actor(apify_token, "apify~google-search-scraper", {"queries": [query], "maxPagesPerQuery": 1, "resultsPerPage": 10})
-    results = [{"title": i.get("title", ""), "url": i.get("url", ""), "description": i.get("description", "")[:300]} for i in items[:20]]
-    return {"query": query, "results": results, "fetched_at": datetime.now(timezone.utc).isoformat()}
+    items = await apify_run_actor(
+        apify_token,
+        "apify~google-search-scraper",
+        {"queries": [query], "maxPagesPerQuery": 1, "resultsPerPage": 10}
+    )
+    results = [
+        {
+            "title": i.get("title", ""),
+            "url": i.get("url", ""),
+            "description": i.get("description", "")[:300]
+        }
+        for i in items[:20]
+    ]
+    return {
+        "query": query,
+        "results": results,
+        "fetched_at": datetime.now(timezone.utc).isoformat()
+    }
+
 
 async def refresh_university_data(uni: dict):
     uid = uni["id"]
@@ -154,6 +227,7 @@ async def refresh_university_data(uni: dict):
             """, uid, platform, json.dumps(data))
     logger.info(f"Done {uni['name']}")
 
+
 async def refresh_all_universities():
     logger.info("Daily refresh start")
     async with db_pool.acquire() as conn:
@@ -165,45 +239,82 @@ async def refresh_all_universities():
             logger.error(f"Error {uni['name']}: {e}")
     logger.info(f"Done {len(unis)} universities")
 
+
 @app.get("/")
 async def root():
     return {"status": "ok", "service": "University Social Analytics API", "version": "1.0"}
+
 
 @app.post("/api/register")
 async def register(req: RegisterRequest, background_tasks: BackgroundTasks):
     secret_token = secrets.token_hex(32)
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("""
-            INSERT INTO universities (name, instagram_handle, tiktok_handle, web_keywords, apify_token, secret_token)
-            VALUES ($1,$2,$3,$4,$5,$6) RETURNING id
-        """, req.name, req.instagram_handle, req.tiktok_handle, req.web_keywords, req.apify_token, secret_token)
+            INSERT INTO universities
+                (name, instagram_handle, tiktok_handle, web_keywords, apify_token, secret_token)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id
+        """, req.name, req.instagram_handle, req.tiktok_handle,
+            req.web_keywords, req.apify_token, secret_token)
     uni_id = str(row["id"])
-    uni = {"id": row["id"], "name": req.name, "instagram_handle": req.instagram_handle, "tiktok_handle": req.tiktok_handle, "web_keywords": req.web_keywords, "apify_token": req.apify_token}
+    uni = {
+        "id": row["id"],
+        "name": req.name,
+        "instagram_handle": req.instagram_handle,
+        "tiktok_handle": req.tiktok_handle,
+        "web_keywords": req.web_keywords,
+        "apify_token": req.apify_token
+    }
     background_tasks.add_task(refresh_university_data, uni)
     return {"university_id": uni_id, "secret_token": secret_token, "message": "Registered!"}
+
 
 @app.get("/api/data/{university_id}")
 async def get_data(university_id: str, authorization: str = Header(None)):
     uni = await get_university(university_id, authorization or "")
     async with db_pool.acquire() as conn:
-        cache = await conn.fetch("SELECT platform, data, updated_at FROM data_cache WHERE university_id=$1", uuid.UUID(university_id))
+        cache = await conn.fetch(
+            "SELECT platform, data, updated_at FROM data_cache WHERE university_id=$1",
+            uuid.UUID(university_id)
+        )
     return {
-        "university": {"id": university_id, "name": uni["name"], "instagram": uni["instagram_handle"], "tiktok": uni["tiktok_handle"]},
-        "data": {r["platform"]: {"data": r["data"], "updated_at": str(r["updated_at"])} for r in cache}
+        "university": {
+            "id": university_id,
+            "name": uni["name"],
+            "instagram": uni["instagram_handle"],
+            "tiktok": uni["tiktok_handle"]
+        },
+        "data": {
+            r["platform"]: {"data": r["data"], "updated_at": str(r["updated_at"])}
+            for r in cache
+        }
     }
 
+
 @app.post("/api/refresh/{university_id}")
-async def refresh(university_id: str, authorization: str = Header(None), background_tasks: BackgroundTasks = None):
+async def refresh(
+    university_id: str,
+    authorization: str = Header(None),
+    background_tasks: BackgroundTasks = None
+):
     uni = await get_university(university_id, authorization or "")
     background_tasks.add_task(refresh_university_data, dict(uni))
     return {"message": "Refresh started"}
+
 
 @app.get("/api/status/{university_id}")
 async def status(university_id: str, authorization: str = Header(None)):
     uni = await get_university(university_id, authorization or "")
     async with db_pool.acquire() as conn:
-        cache = await conn.fetch("SELECT platform, updated_at FROM data_cache WHERE university_id=$1", uuid.UUID(university_id))
-    return {"university": uni["name"], "platforms": {r["platform"]: str(r["updated_at"]) for r in cache}}
+        cache = await conn.fetch(
+            "SELECT platform, updated_at FROM data_cache WHERE university_id=$1",
+            uuid.UUID(university_id)
+        )
+    return {
+        "university": uni["name"],
+        "platforms": {r["platform"]: str(r["updated_at"]) for r in cache}
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
